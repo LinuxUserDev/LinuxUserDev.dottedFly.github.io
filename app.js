@@ -461,13 +461,18 @@
       const videoId = extractYoutubeId(youtubeUrl);
       if(!videoId){ console.warn('[BlockedMode] Could not extract video ID from:', youtubeUrl); return null; }
 
+      // corsproxy.io adds Access-Control-Allow-Origin header to any request
+      // Piped returns 200 with valid data but no CORS header — proxy fixes that
+      const CORS_WRAP = url => 'https://corsproxy.io/?' + encodeURIComponent(url);
+
       for(const instance of PIPED_INSTANCES){
         try {
           const apiUrl = instance + '/streams/' + videoId;
-          console.log('[BlockedMode] Trying Piped instance:', apiUrl);
-          const res = await fetch(apiUrl, {
+          const proxied = CORS_WRAP(apiUrl);
+          console.log('[BlockedMode] Trying:', proxied);
+          const res = await fetch(proxied, {
             headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(12000)
           });
           if(!res.ok){ console.warn('[BlockedMode]', instance, 'returned HTTP', res.status); continue; }
           const data = await res.json();
@@ -479,10 +484,10 @@
 
           if(streams.length > 0){
             const best = streams[0];
-            console.log('[BlockedMode] Got stream from', instance, '— quality:', best.quality, 'codec:', best.codec, 'url:', best.url.slice(0, 80)+'...');
+            console.log('[BlockedMode] Got stream from', instance, '— quality:', best.quality, 'codec:', best.codec);
             return best.url;
           }
-          console.warn('[BlockedMode]', instance, '— no audioStreams in response');
+          console.warn('[BlockedMode]', instance, '— no audioStreams in response:', JSON.stringify(data).slice(0,200));
         } catch(e){
           console.warn('[BlockedMode]', instance, 'failed:', e.message);
         }
