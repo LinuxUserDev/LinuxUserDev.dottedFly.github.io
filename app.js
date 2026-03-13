@@ -457,39 +457,46 @@
       } catch(e){ return null; }
     }
 
+    // CORS proxies to wrap Invidious API calls — browser same-origin policy blocks direct fetch
+    const CORS_PROXIES = [
+      url => 'https://corsproxy.io/?' + encodeURIComponent(url),
+      url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+    ];
+
     async function invidiousGetAudioUrl(youtubeUrl){
       const videoId = extractYoutubeId(youtubeUrl);
       if(!videoId){ console.warn('[BlockedMode] Could not extract video ID from:', youtubeUrl); return null; }
 
       for(const instance of INVIDIOUS_INSTANCES){
-        try {
-          const apiUrl = instance + '/api/v1/videos/' + videoId + '?fields=adaptiveFormats,formatStreams';
-          console.log('[BlockedMode] Trying instance:', instance);
-          const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
-          if(!res.ok){ console.warn('[BlockedMode]', instance, 'returned', res.status); continue; }
-          const data = await res.json();
+        for(const proxy of CORS_PROXIES){
+          try {
+            const apiUrl = instance + '/api/v1/videos/' + videoId + '?fields=adaptiveFormats,formatStreams';
+            const proxied = proxy(apiUrl);
+            console.log('[BlockedMode] Trying:', proxied);
+            const res = await fetch(proxied, { signal: AbortSignal.timeout(10000) });
+            if(!res.ok){ console.warn('[BlockedMode] Got', res.status, 'from proxy'); continue; }
+            const data = await res.json();
 
-          // adaptiveFormats has audio-only streams; pick highest bitrate audio
-          const audioFormats = (data.adaptiveFormats || [])
-            .filter(f => f.type && f.type.startsWith('audio/'))
-            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+            // audio-only adaptive streams — highest bitrate first
+            const audioFormats = (data.adaptiveFormats || [])
+              .filter(f => f.type && f.type.startsWith('audio/'))
+              .sort((a, b) => (parseInt(b.bitrate)||0) - (parseInt(a.bitrate)||0));
 
-          if(audioFormats.length > 0){
-            const best = audioFormats[0];
-            console.log('[BlockedMode] Got audio URL from', instance, '- type:', best.type, 'bitrate:', best.bitrate);
-            return best.url;
+            if(audioFormats.length > 0){
+              const best = audioFormats[0];
+              console.log('[BlockedMode] Success! type:', best.type, 'bitrate:', best.bitrate);
+              return best.url;
+            }
+
+            // fallback: combined stream (has video+audio)
+            const streams = data.formatStreams || [];
+            if(streams.length > 0){
+              console.log('[BlockedMode] Using combined stream fallback');
+              return streams[0].url;
+            }
+          } catch(e){
+            console.warn('[BlockedMode]', instance, 'via proxy failed:', e.message);
           }
-
-          // Fallback: formatStreams (combined video+audio, lower quality but more compatible)
-          const streams = data.formatStreams || [];
-          if(streams.length > 0){
-            console.log('[BlockedMode] Using formatStream fallback from', instance);
-            return streams[0].url;
-          }
-
-          console.warn('[BlockedMode]', instance, '- no audio formats found in response');
-        } catch(e){
-          console.warn('[BlockedMode] Instance', instance, 'failed:', e.message);
         }
       }
       return null;
