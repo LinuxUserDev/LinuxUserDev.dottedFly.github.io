@@ -454,11 +454,19 @@
       try {
         const reqUrl = '/proxy?id=' + videoId;
         console.log('[BlockedMode] Calling proxy:', reqUrl);
-        const res = await fetch(reqUrl, { signal: AbortSignal.timeout(15000) });
-        const data = await res.json();
-        if(!res.ok || data.error){ console.warn('[BlockedMode] Proxy error:', data.error); return null; }
-        console.log('[BlockedMode] Got audio — quality:', data.quality, 'codec:', data.codec, 'via:', data.instance);
-        return data.url;
+        const res = await fetch(reqUrl, { signal: AbortSignal.timeout(20000) });
+        if(!res.ok){
+          // Error responses are JSON
+          const data = await res.json().catch(()=>({error:'HTTP '+res.status}));
+          console.warn('[BlockedMode] Proxy error:', data.error);
+          alert('Blocked Mode failed: ' + data.error);
+          return null;
+        }
+        // Success: worker streams raw audio bytes — wrap in a blob URL for the Audio element
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        console.log('[BlockedMode] Got audio blob, size:', blob.size, 'type:', blob.type);
+        return blobUrl;
       } catch(e){
         console.warn('[BlockedMode] Proxy call failed:', e.message);
         return null;
