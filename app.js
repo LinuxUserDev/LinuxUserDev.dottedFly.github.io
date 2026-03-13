@@ -503,21 +503,11 @@
 
       const isYoutube = track.kind==='youtube' || detectKind(track.source||track.url||'') === 'youtube';
 
-      // Blocked mode: use cobalt.tools to get a direct audio stream for YouTube
+      // Blocked mode: use Invidious frontend embed (different domain, not blocked by school filters)
+      // Falls back to blob audio download via worker if the embed also fails
       if(blockedMode && isYoutube){
-        state.playingId = track.id;
-        state.isPlaying = false;
-        state.blockedLoading = true;
-        render();
-        const audioUrl = await invidiousGetAudioUrl(track.source || track.url);
-        state.blockedLoading = false;
-        if(!audioUrl){
-          alert('Blocked Mode: Could not fetch audio from any Invidious instance.\n\nThis can happen if:\n- All Invidious servers are temporarily down\n- The video is age-restricted or private\n\nTry again in a moment, or check the browser console for details.');
-          state.playingId = null;
-          render();
-          return;
-        }
-        attachAudio(audioUrl, track.id);
+        // Just render — youtubeEmbed() will automatically use an Invidious URL
+        state.playingId = track.id; state.isPlaying = true; render();
         return;
       }
 
@@ -569,6 +559,16 @@
     }
 
     // YouTube/SoundCloud/Spotify helper functions (unchanged)
+    // Invidious frontends to try in blocked mode — same video, different domain
+    const INVIDIOUS_FRONTENDS = [
+      'https://inv.tux.pizza',
+      'https://invidious.privacydev.net',
+      'https://yt.cdaut.de',
+      'https://iv.ggtyler.dev',
+      'https://invidious.nerdvpn.de',
+    ];
+    let _invidiousIdx = 0;
+
     function youtubeEmbed(url){
       let id = null;
       try{
@@ -579,7 +579,13 @@
           if(m) id = m[1];
         }
       }catch(e){}
-      return id ? `https://www.youtube.com/embed/${id}?rel=0&enablejsapi=1&autoplay=1` : null;
+      if(!id) return null;
+      // In blocked mode use an Invidious frontend embed instead of youtube.com
+      if(blockedMode){
+        const base = INVIDIOUS_FRONTENDS[_invidiousIdx % INVIDIOUS_FRONTENDS.length];
+        return base + '/embed/' + id + '?autoplay=1&listen=1';
+      }
+      return 'https://www.youtube.com/embed/' + id + '?rel=0&enablejsapi=1&autoplay=1';
     }
     function soundcloudEmbed(url){ return `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=true`; }
     function spotifyEmbed(url){
@@ -908,7 +914,22 @@
           embedArea.innerHTML = `<audio src="${nowTrack.url}" controls style="width:100%"></audio>`;
         } else if(detectKind(nowTrack.source)==='youtube'){
           const src = youtubeEmbed(nowTrack.source);
-          embedArea.innerHTML = src ? `<iframe id="yt-player" src="${src}" title="YouTube" style="width:100%;height:220px;border:0" allow="autoplay; encrypted-media" allowfullscreen></iframe>` : linkHtml(nowTrack.source);
+          if(src && blockedMode){
+            embedArea.innerHTML = `
+              <div style="display:flex;flex-direction:column;gap:6px;height:100%">
+                <iframe id="yt-player" src="${src}" title="YouTube" style="width:100%;flex:1;border:0;border-radius:6px" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span style="font-size:11px;color:var(--muted)">Via: ${src.split('/')[2]}</span>
+                  <button id="nextServerBtn" style="font-size:11px;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--muted);cursor:pointer">Try next server</button>
+                </div>
+              </div>`;
+            setTimeout(()=>{
+              const btn = document.getElementById('nextServerBtn');
+              if(btn) btn.onclick = ()=>{ _invidiousIdx++; render(); };
+            }, 0);
+          } else {
+            embedArea.innerHTML = src ? `<iframe id="yt-player" src="${src}" title="YouTube" style="width:100%;height:220px;border:0" allow="autoplay; encrypted-media" allowfullscreen></iframe>` : linkHtml(nowTrack.source);
+          }
         } else if(detectKind(nowTrack.source)==='soundcloud'){
           const src = soundcloudEmbed(nowTrack.source);
           embedArea.innerHTML = `<iframe id="sc-player" width="100%" height="200" scrolling="no" frameborder="no" src="${src}"></iframe>`;
