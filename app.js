@@ -119,15 +119,10 @@
     };
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Simple local account manager (stored in localStorage) — provides login/signup UI with password.
-    // currentUser will be an object { username }
+    // Supabase-backed accounts so users work across all devices
     let currentUser = null;
 
-    const LS_USERS = 'dottedfly_users_v1';
     const LS_SESSION = 'dottedfly_session_v1';
-
-    function loadUsers(){ try { return JSON.parse(localStorage.getItem(LS_USERS) || '[]'); } catch(e){ return []; } }
-    function saveUsers(u){ localStorage.setItem(LS_USERS, JSON.stringify(u)); }
 
     function getSession(){ try { return JSON.parse(localStorage.getItem(LS_SESSION) || 'null'); } catch(e){ return null; } }
     function setSession(username){
@@ -138,11 +133,23 @@
       }
     }
 
-    // ensure at least one "guest" user exists
-    (function ensureGuest(){
-      const users = loadUsers();
-      if(!users.find(u=>u.username==='guest')){ users.push({ username: 'guest', password: '', created_at: new Date().toISOString() }); saveUsers(users); }
-    })();
+    async function sbFindUser(username){
+      const res = await fetch(SUPABASE_URL+'/rest/v1/dottedfly_users_v1?username=eq.'+encodeURIComponent(username)+'&limit=1', { headers: _sbHeaders });
+      if(!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] || null;
+    }
+
+    async function sbCreateUser(username, password){
+      const res = await fetch(SUPABASE_URL+'/rest/v1/dottedfly_users_v1', {
+        method: 'POST',
+        headers: { ..._sbHeaders, Prefer: 'return=representation' },
+        body: JSON.stringify({ username, password, created_at: new Date().toISOString() }),
+      });
+      if(!res.ok){ const e = await res.text(); throw new Error(e); }
+      const rows = await res.json();
+      return Array.isArray(rows) ? rows[0] : rows;
+    }
 
     // create an auth modal UI that blocks the app until login/signup
     function showAuthModal(){
@@ -187,12 +194,12 @@
 
         function showMsg(m){ const el = document.getElementById('auth-msg'); if(el) el.textContent = m; }
 
-        document.getElementById('auth-login').onclick = ()=>{
+        document.getElementById('auth-login').onclick = async ()=>{
           const u = (document.getElementById('auth-username').value||'').trim();
           const p = (document.getElementById('auth-password').value||'');
           if(!u){ showMsg('Enter username'); return; }
-          const users = loadUsers();
-          const found = users.find(x=> x.username === u);
+          showMsg('Checking…');
+          const found = await sbFindUser(u);
           if(!found){ showMsg('User not found'); return; }
           if((found.password||'') !== p){ showMsg('Incorrect password'); return; }
           setSession(u);
@@ -201,15 +208,15 @@
           resolve(currentUser);
         };
 
-        document.getElementById('auth-signup').onclick = ()=>{
+        document.getElementById('auth-signup').onclick = async ()=>{
           const u = (document.getElementById('auth-username').value||'').trim();
           const p = (document.getElementById('auth-password').value||'');
           if(!u){ showMsg('Choose a username'); return; }
           if(u.length < 2){ showMsg('Username too short'); return; }
-          const users = loadUsers();
-          if(users.find(x=> x.username === u)){ showMsg('Username taken'); return; }
-          users.push({ username: u, password: p, created_at: new Date().toISOString() });
-          saveUsers(users);
+          showMsg('Creating account…');
+          const existing = await sbFindUser(u);
+          if(existing){ showMsg('Username taken'); return; }
+          try { await sbCreateUser(u, p); } catch(e){ showMsg('Sign up failed: '+e.message); return; }
           setSession(u);
           currentUser = { username: u };
           overlay.remove();
