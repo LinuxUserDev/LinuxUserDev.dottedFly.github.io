@@ -1,17 +1,18 @@
 // DottedFly worker.js
-// Handles /proxy?id=VIDEO_ID for Blocked Mode audio fetching.
-// All other requests fall through to static assets (your site files).
+// Calls YouTube's internal /youtubei/v1/player API directly (same API the YouTube app uses).
+// Returns a direct audio stream URL. No third-party services involved.
 
-const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://api.piped.projectsegfau.lt',
-  'https://pipedapi.tokhmi.xyz',
-  'https://pipedapi.moomoo.me',
-  'https://piped-api.garudalinux.org',
-  'https://pa.il.ax',
-  'https://pipedapi.syncpundit.io',
-  'https://api.piped.yt',
-];
+const YT_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false';
+
+// Android client context — returns direct, non-encrypted stream URLs
+const YT_CLIENT = {
+  clientName: 'ANDROID',
+  clientVersion: '19.09.37',
+  androidSdkVersion: 30,
+  userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+  hl: 'en',
+  gl: 'US',
+};
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -27,12 +28,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
     }
 
-    // Only intercept /proxy — everything else goes to your static site
+    // Pass all non-proxy requests to static assets
     if (url.pathname !== '/proxy') {
       return env.ASSETS.fetch(request);
     }
@@ -42,34 +42,67 @@ export default {
       return jsonResponse({ error: 'Missing or invalid video id' }, 400);
     }
 
-    for (const instance of PIPED_INSTANCES) {
-      try {
-        const res = await fetch(`${instance}/streams/${videoId}`, {
-          headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
-          signal: AbortSignal.timeout(8000),
-        });
+    try {
+      const body = {
+        videoId,
+        context: { client: YT_CLIENT },
+        contentCheckOk: true,
+        racyCheckOk: true,
+      };
 
-        if (!res.ok) continue;
+      const res = await fetch(YT_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': YT_CLIENT.userAgent,
+          'X-YouTube-Client-Name': '3',
+          'X-YouTube-Client-Version': YT_CLIENT.clientVersion,
+          'Origin': 'https://www.youtube.com',
+        },
+        body: JSON.stringify(body),
+      });
 
-        const data = await res.json();
-
-        const audioStreams = (data.audioStreams || [])
-          .filter(s => s.url && !s.videoOnly)
-          .sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-
-        if (audioStreams.length > 0) {
-          return jsonResponse({
-            url: audioStreams[0].url,
-            quality: audioStreams[0].quality,
-            codec: audioStreams[0].codec,
-            instance,
-          });
-        }
-      } catch (_) {
-        // try next instance
+      if (!res.ok) {
+        return jsonResponse({ error: `YouTube API returned ${res.status}` }, 502);
       }
-    }
 
-    return jsonResponse({ error: 'All Piped instances failed' }, 502);
+      const data = await res.json();
+
+      const status = data?.playabilityStatus?.status;
+      if (status && status !== 'OK') {
+        const reason = data?.playabilityStatus?.reason || status;
+        return jsonResponse({ error: `Video not playable: ${reason}` }, 403);
+      }
+
+      const formats = data?.streamingData?.adaptiveFormats || [];
+
+      // Audio-only streams, highest bitrate first
+      const audioFormats = formats
+        .filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url)
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (audioFormats.length === 0) {
+        // Fallback to combined video+audio formats
+        const combined = (data?.streamingData?.formats || [])
+          .filter(f => f.url)
+          .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+        if (combined.length > 0) {
+          const f = combined[0];
+          return jsonResponse({ url: f.url, quality: f.qualityLabel || 'combined', codec: f.mimeType });
+        }
+        return jsonResponse({ error: 'No playable audio streams found' }, 502);
+      }
+
+      const best = audioFormats[0];
+      return jsonResponse({
+        url: best.url,
+        quality: best.audioQuality || 'unknown',
+        codec: best.mimeType,
+        bitrate: best.bitrate,
+      });
+
+    } catch (e) {
+      return jsonResponse({ error: e.message }, 500);
+    }
   },
 };
