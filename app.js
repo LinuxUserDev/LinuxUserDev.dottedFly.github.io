@@ -135,8 +135,18 @@
 
     async function sbFindUser(username){
       const res = await fetch(SUPABASE_URL+'/rest/v1/dottedfly_users_v1?username=eq.'+encodeURIComponent(username)+'&limit=1', { headers: _sbHeaders });
-      if(!res.ok) return null;
+      if(!res.ok){
+        const err = await res.text();
+        console.error('sbFindUser HTTP '+res.status+':', err);
+        if(res.status===404 || err.includes('does not exist') || err.includes('schema cache')){
+          alert('\u26a0\ufe0f Users table not found in Supabase.\n\nPlease run this SQL in your Supabase SQL Editor:\n\ncreate table if not exists dottedfly_users_v1 (\n  id uuid primary key default gen_random_uuid(),\n  created_at timestamptz default now(),\n  username text unique not null,\n  password text\n);\nalter table dottedfly_users_v1 enable row level security;\ncreate policy \"public all\" on dottedfly_users_v1 for all using (true) with check (true);');
+        } else {
+          alert('Login error ('+res.status+'): '+err);
+        }
+        return null;
+      }
       const rows = await res.json();
+      console.log('sbFindUser result for', username+':', rows);
       return rows[0] || null;
     }
 
