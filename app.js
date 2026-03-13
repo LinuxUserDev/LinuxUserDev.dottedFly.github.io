@@ -436,33 +436,63 @@
     function setBlockedMode(val){
       blockedMode = val;
       localStorage.setItem(LS_BLOCKED, val ? '1' : '0');
-      const btn = document.getElementById('blockedModeBtn');
-      if(btn) styleBlockedBtn(btn, val);
     }
 
-    function styleBlockedBtn(btn, active){
-      btn.textContent = active ? '🔒 Blocked Mode: ON' : '🔓 Blocked Mode: OFF';
-      btn.style.background = active ? '#ff6b6b' : 'transparent';
-      btn.style.color = active ? '#111' : 'var(--muted)';
-      btn.style.border = active ? 'none' : '1px solid rgba(255,255,255,0.08)';
-    }
+    // Multiple Invidious instances as fallbacks — tries each until one works.
+    // Invidious returns real googlevideo.com CDN URLs which bypass YouTube blocks.
+    const INVIDIOUS_INSTANCES = [
+      'https://inv.tux.pizza',
+      'https://invidious.fdn.fr',
+      'https://iv.ggtyler.dev',
+      'https://invidious.privacydev.net',
+      'https://yt.cdaut.de',
+      'https://invidious.nerdvpn.de',
+    ];
 
-    async function cobaltGetAudioUrl(youtubeUrl){
-      // cobalt.tools free public API — no key needed
+    function extractYoutubeId(url){
       try {
-        const res = await fetch('https://api.cobalt.tools/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({ url: youtubeUrl, downloadMode: 'audio', audioFormat: 'mp3', filenameStyle: 'basic' }),
-        });
-        if(!res.ok){ console.warn('cobalt error', res.status, await res.text()); return null; }
-        const data = await res.json();
-        console.log('[BlockedMode] cobalt response:', data);
-        // cobalt returns { status: "stream"|"redirect"|"tunnel"|"picker", url: "..." }
-        if(data.url) return data.url;
-        if(data.status === 'picker' && data.picker?.[0]?.url) return data.picker[0].url;
-        return null;
-      } catch(e){ console.warn('cobalt fetch failed:', e); return null; }
+        if(url.includes('youtu.be/')) return url.split('youtu.be/')[1].split(/[?&]/)[0];
+        const u = new URL(url);
+        return u.searchParams.get('v') || null;
+      } catch(e){ return null; }
+    }
+
+    async function invidiousGetAudioUrl(youtubeUrl){
+      const videoId = extractYoutubeId(youtubeUrl);
+      if(!videoId){ console.warn('[BlockedMode] Could not extract video ID from:', youtubeUrl); return null; }
+
+      for(const instance of INVIDIOUS_INSTANCES){
+        try {
+          const apiUrl = instance + '/api/v1/videos/' + videoId + '?fields=adaptiveFormats,formatStreams';
+          console.log('[BlockedMode] Trying instance:', instance);
+          const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+          if(!res.ok){ console.warn('[BlockedMode]', instance, 'returned', res.status); continue; }
+          const data = await res.json();
+
+          // adaptiveFormats has audio-only streams; pick highest bitrate audio
+          const audioFormats = (data.adaptiveFormats || [])
+            .filter(f => f.type && f.type.startsWith('audio/'))
+            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+          if(audioFormats.length > 0){
+            const best = audioFormats[0];
+            console.log('[BlockedMode] Got audio URL from', instance, '- type:', best.type, 'bitrate:', best.bitrate);
+            return best.url;
+          }
+
+          // Fallback: formatStreams (combined video+audio, lower quality but more compatible)
+          const streams = data.formatStreams || [];
+          if(streams.length > 0){
+            console.log('[BlockedMode] Using formatStream fallback from', instance);
+            return streams[0].url;
+          }
+
+          console.warn('[BlockedMode]', instance, '- no audio formats found in response');
+        } catch(e){
+          console.warn('[BlockedMode] Instance', instance, 'failed:', e.message);
+        }
+      }
+      return null;
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -501,10 +531,10 @@
         state.isPlaying = false;
         state.blockedLoading = true;
         render();
-        const audioUrl = await cobaltGetAudioUrl(track.source || track.url);
+        const audioUrl = await invidiousGetAudioUrl(track.source || track.url);
         state.blockedLoading = false;
         if(!audioUrl){
-          alert('Blocked Mode: Could not fetch audio for this track.\nCobalt.tools may be unavailable or the video is restricted.');
+          alert('Blocked Mode: Could not fetch audio from any Invidious instance.\n\nThis can happen if:\n- All Invidious servers are temporarily down\n- The video is age-restricted or private\n\nTry again in a moment, or check the browser console for details.');
           state.playingId = null;
           render();
           return;
@@ -736,10 +766,12 @@
           <button id="refreshBtn" class="btn ghost small">Refresh</button>
           <button id="shuffleBtn" class="btn ghost small">Randomize</button>
         </div>
-        <div style="margin-top:4px">
-          <button id="blockedModeBtn" class="btn ghost small" style="width:100%;text-align:left;padding:8px 12px;border-radius:8px;font-size:12px;transition:all 0.2s"></button>
+        <div style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;letter-spacing:0.05em;text-transform:uppercase">School Mode</div>
+          <button id="blockedModeBtn" style="width:100%;text-align:left;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:all 0.2s;border:1px solid rgba(255,255,255,0.1);background:${blockedMode?'#ff6b6b':'rgba(255,255,255,0.04)'};color:${blockedMode?'#111':'#e6eef1'}">${blockedMode?'🔒 Blocked Mode: ON':'🔓 Blocked Mode: OFF'}</button>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px">${blockedMode?'YouTube audio fetched via Invidious proxy':'Enable if YouTube is blocked on your network'}</div>
+          ${ state.blockedLoading ? `<div style="font-size:12px;color:#ffcc66;margin-top:4px;animation:pulse 1s infinite">⏳ Fetching audio stream…</div>` : '' }
         </div>
-        ${ state.blockedLoading ? `<div style="font-size:12px;color:var(--muted);padding:4px 2px;animation:pulse 1s infinite">⏳ Fetching audio via cobalt.tools…</div>` : '' }
         <div class="track-list" id="trackList"></div>
         <div class="footer">
           <div class="small-muted">Signed in as ${currentUser ? currentUser.username : 'guest'}</div>
@@ -918,7 +950,7 @@
       document.getElementById('file').onchange = async (e)=>{ const f = e.target.files[0]; if(f){ await uploadFile(f); e.target.value=''; } };
       document.getElementById('refreshBtn').onclick = ()=> { syncPlaylists(); syncTracks(); };
       const _bmBtn = document.getElementById('blockedModeBtn');
-      if(_bmBtn){ styleBlockedBtn(_bmBtn, blockedMode); _bmBtn.onclick = ()=> setBlockedMode(!blockedMode); }
+      if(_bmBtn){ _bmBtn.onclick = ()=> { setBlockedMode(!blockedMode); render(); }; }
       document.getElementById('stopBtn').onclick = ()=> stopPlayback();
       document.getElementById('clearMine').onclick = ()=> {
         if(confirm('Clear all tracks you created?')){
