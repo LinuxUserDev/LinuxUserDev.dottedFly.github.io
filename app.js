@@ -6,12 +6,11 @@
   try {
     // ── Supabase backend ──────────────────────────────────────────────────────
     const SUPABASE_URL = 'https://hwglnarnkyeztvrjbxaf.supabase.co';
-    const SUPABASE_KEY = 'sb_publishable_cEATRRrdHDUg6agBVektnw_ARKG8vQl';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh3Z2xuYXJua3llenR2cmpieGFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNjA5ODcsImV4cCI6MjA4ODkzNjk4N30.Pf5mu-BjVgJrJtiVPb5EYnirIzK0mmMcQ8wg2tf38S0';
 
-    // With new sb_publishable_ keys, Authorization must exactly match apikey (no "Bearer" prefix)
     const _sbHeaders = {
       'apikey': SUPABASE_KEY,
-      'Authorization': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
     };
 
